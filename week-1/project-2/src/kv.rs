@@ -18,7 +18,7 @@ const KV_SWAP_NAME: &'static str = "kv.tmp";
 pub struct KvStore {
     path: PathBuf,
     index: Box<HashMap<String, Value>>,
-    writer: File,
+    file: File,
     uncompacted: u64,
 }
 
@@ -37,14 +37,14 @@ impl KvStore {
         Ok(KvStore {
             path: path.into(),
             index: index,
-            writer: file,
+            file: file,
             uncompacted: 0,
         })
     }
 
     pub fn set(&mut self, key: String, value: String) -> Result<()> {
-        let len = write_log(
-            &mut self.writer,
+        let len = write_command(
+            &mut self.file,
             Command::Set {
                 key: key.clone(),
                 value: value.clone(),
@@ -67,7 +67,7 @@ impl KvStore {
         if let Some(value) = self.index.get(&key) {
             match value {
                 Value::Position { start, length } => {
-                    let v = read_native_value(&self.writer, *start, *length)?;
+                    let v = read_value(&self.file, *start, *length)?;
                     self.index.insert(key, Value::Inner(v.clone()));
                     Ok(Some(v))
                 }
@@ -82,7 +82,7 @@ impl KvStore {
         if self.index.contains_key(&key) {
             self.index.remove(&key);
 
-            write_log(&mut self.writer, Command::Remove { key })?;
+            write_command(&mut self.file, Command::Remove { key })?;
 
             Ok(())
         } else {
@@ -94,8 +94,8 @@ impl KvStore {
         let mut offset = 0_u64;
         let swap_path = self.path.clone().join(KV_SWAP_NAME);
 
-        //let old_file = self.writer.try_clone()?;
-        self.writer = OpenOptions::new()
+        let reader = self.file.try_clone()?;
+        let mut writer = OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
@@ -104,27 +104,24 @@ impl KvStore {
         for (key, val) in self.index.iter_mut() {
             match val {
                 Value::Position { start, length } => {
-                    let s = read_native_value(&self.writer, *start, *length)?;
-
-                    let len = write_log(
-                        &mut self.writer,
+                    let s = read_value(&reader, *start, *length)?;
+                    let len = write_command(
+                        &mut writer,
                         Command::Set {
                             key: key.clone(),
                             value: s,
                         },
                     )?;
-
                     // update in-memory value.
                     *val = Value::Position {
                         start: offset,
                         length: len,
                     };
-
                     offset += len;
                 }
                 Value::Inner(v) => {
-                    let len = write_log(
-                        &mut self.writer,
+                    let len = write_command(
+                        &mut writer,
                         Command::Set {
                             key: key.clone(),
                             value: v.clone(),
@@ -135,13 +132,14 @@ impl KvStore {
             }
         }
 
+        self.file = writer;
         fs::rename(&swap_path, &self.path.clone().join(KV_LOG_NAME))?;
 
         Ok(())
     }
 }
 
-fn read_native_value(file: &File, start: u64, length: u64) -> Result<String> {
+fn read_value(file: &File, start: u64, length: u64) -> Result<String> {
     let mut buffer = vec![0; length as usize];
 
     unsafe {
@@ -190,7 +188,7 @@ fn read_commands<R: Read>(r: R) -> Result<Box<HashMap<String, Value>>> {
     Ok(ans)
 }
 
-fn write_log<W: Write>(w: &mut W, cmd: Command) -> Result<u64> {
+fn write_command<W: Write>(w: &mut W, cmd: Command) -> Result<u64> {
     let s = serde_json::to_string(&cmd)?;
     w.write(s.as_bytes())?;
 
