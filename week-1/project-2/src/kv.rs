@@ -1,8 +1,6 @@
-use libc::c_void;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
-use std::os::unix::io::AsRawFd;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -67,7 +65,7 @@ impl KvStore {
         if let Some(value) = self.index.get(&key) {
             match value {
                 Value::Position { start, length } => {
-                    let v = read_value(&self.file, *start, *length)?;
+                    let v = read_value(&mut self.file, *start, *length)?;
                     self.index.insert(key, Value::Inner(v.clone()));
                     Ok(Some(v))
                 }
@@ -91,10 +89,9 @@ impl KvStore {
     }
 
     fn rebuild_log(&mut self) -> Result<()> {
-        let mut offset = 0_u64;
         let swap_path = self.path.clone().join(KV_SWAP_NAME);
 
-        let reader = self.file.try_clone()?;
+        let mut reader = self.file.try_clone()?;
         let mut writer = OpenOptions::new()
             .create(true)
             .read(true)
@@ -104,30 +101,23 @@ impl KvStore {
         for (key, val) in self.index.iter_mut() {
             match val {
                 Value::Position { start, length } => {
-                    let s = read_value(&reader, *start, *length)?;
-                    let len = write_command(
-                        &mut writer,
-                        Command::Set {
-                            key: key.clone(),
-                            value: s,
-                        },
-                    )?;
+                    let mut buf = vec![0; *length as usize];
+                    reader.read(&mut buf)?;
+
+                    let pos = writer.seek(SeekFrom::Current(0))?;
+                    writer.write(&buf)?;
+
                     // update in-memory value.
-                    *val = Value::Position {
-                        start: offset,
-                        length: len,
-                    };
-                    offset += len;
+                    *start = pos;
                 }
                 Value::Inner(v) => {
-                    let len = write_command(
+                    write_command(
                         &mut writer,
                         Command::Set {
                             key: key.clone(),
                             value: v.clone(),
                         },
                     )?;
-                    offset += len;
                 }
             }
         }
@@ -139,18 +129,13 @@ impl KvStore {
     }
 }
 
-fn read_value(file: &File, start: u64, length: u64) -> Result<String> {
+fn read_value(file: &mut File, start: u64, length: u64) -> Result<String> {
     let mut buffer = vec![0; length as usize];
 
-    unsafe {
-        let buf: *mut c_void = buffer.as_mut_ptr() as *mut c_void;
-        libc::pread(
-            file.as_raw_fd(),
-            buf,
-            length as libc::size_t,
-            start as libc::off_t,
-        );
-    }
+    let pos = file.seek(SeekFrom::Current(0))?;
+    file.seek(SeekFrom::Start(start))?;
+    file.read(&mut buffer)?;
+    file.seek(SeekFrom::Start(pos))?;
 
     if let Command::Set { value, .. } = serde_json::from_slice(&buffer)? {
         Ok(value)
