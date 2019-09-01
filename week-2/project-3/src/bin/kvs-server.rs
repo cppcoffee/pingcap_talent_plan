@@ -4,10 +4,10 @@ extern crate failure;
 use std::env;
 use std::net::SocketAddr;
 use std::str::FromStr;
-use structopt::StructOpt;
 
 use env_logger::WriteStyle;
 use log::{info, LevelFilter};
+use structopt::StructOpt;
 
 use kvs::*;
 
@@ -18,7 +18,7 @@ const DEFAULT_ENGINE: Engine = Engine::Kvs;
 #[structopt(name = "kvs-server", about = "An key-value store server.")]
 struct Opt {
     #[structopt(
-        long,
+        long = "addr",
         help = "Sets the listening address",
         value_name = "IP:PORT",
         raw(default_value = "DEFAULT_LISTENING_ADDRESS"),
@@ -27,8 +27,8 @@ struct Opt {
     addr: SocketAddr,
 
     #[structopt(
-        long,
-        help = "Sets the kv storage engine, support {kvs|sled}.",
+        long = "engine",
+        help = "Sets the kv storage engine, support kvs|sled",
         value_name = "ENGINE-NAME"
     )]
     engine: Option<Engine>,
