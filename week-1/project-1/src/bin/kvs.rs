@@ -5,11 +5,22 @@ use structopt::StructOpt;
 #[structopt(name = "kvs", about = "kvs project")]
 enum Opt {
     #[structopt(name = "set", about = "Set the value of a string key to a string")]
-    Set { key: String, value: String },
+    Set {
+        #[structopt(name = "KEY", help = "A string key")]
+        key: String,
+        #[structopt(name = "VALUE", help = "A string value")]
+        value: String,
+    },
     #[structopt(name = "get", about = "Get the string value of a given string key")]
-    Get { key: String },
+    Get {
+        #[structopt(name = "KEY", help = "A string key")]
+        key: String,
+    },
     #[structopt(name = "rm", about = "Remove a given key")]
-    Rm { key: String },
+    Rm {
+        #[structopt(name = "KEY", help = "A string key")]
+        key: String,
+    },
 }
 
 fn main() {
