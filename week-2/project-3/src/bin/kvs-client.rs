@@ -1,4 +1,4 @@
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
 
 use structopt::StructOpt;
 
@@ -53,7 +53,23 @@ enum Opt {
 fn main() -> Result<()> {
     let opt = Opt::from_args();
 
-    println!("{:?}", opt);
+    match opt {
+        Opt::Get { key, addr } => {
+            let mut cli = KvsClient::connect(&addr)?;
+            match cli.get(key)? {
+                Some(value) => println!("{}", value),
+                None => println!("Key not found"),
+            }
+        }
+        Opt::Set { key, value, addr } => {
+            let mut cli = KvsClient::connect(&addr)?;
+            cli.set(key, value)?;
+        }
+        Opt::Rm { key, addr } => {
+            let mut cli = KvsClient::connect(&addr)?;
+            cli.remove(key)?;
+        }
+    }
 
     Ok(())
 }
