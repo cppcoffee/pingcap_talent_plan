@@ -88,7 +88,8 @@ fn main() {
 }
 
 fn run_with_engine<E: KvsEngine>(engine: E, addr: SocketAddr) -> Result<()> {
-    let mut server = KvsServer::new(engine);
+    let pool = NaiveThreadPool::new(num_cpus::get() as u32)?;
+    let mut server = KvsServer::new(engine, pool);
     server.run(&addr)
 }
 

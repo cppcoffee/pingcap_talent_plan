@@ -3,11 +3,11 @@ use std::thread;
 use super::ThreadPool;
 use crate::Result;
 
-pub struct NaiveThreadPool;
+pub struct NaiveThreadPool {}
 
 impl ThreadPool for NaiveThreadPool {
     fn new(_threads: u32) -> Result<NaiveThreadPool> {
-        Ok(NaiveThreadPool)
+        Ok(NaiveThreadPool {})
     }
 
     fn spawn<F>(&self, job: F)
