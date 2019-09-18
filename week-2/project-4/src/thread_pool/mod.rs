@@ -22,3 +22,5 @@ pub trait ThreadPool {
 
 mod naive;
 pub use self::naive::NaiveThreadPool;
+mod shared_queue;
+pub use self::shared_queue::SharedQueueThreadPool;

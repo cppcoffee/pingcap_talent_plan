@@ -24,6 +24,7 @@ env_logger = "0.6.2"
 crossbeam-utils = "0.6.6"
 panic-control = "0.1.4"
 num_cpus = "1.10.1"
+crossbeam = "0.7.2"
 
 [[bench]]
 name = "engine_bench"
