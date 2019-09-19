@@ -3,7 +3,7 @@ pub use engines::{KvStore, KvsEngine, SledKvsEngine};
 pub use error::{KvsError, Result};
 pub use protocol::{GetResponse, RemoveResponse, Request, SetResponse};
 pub use server::KvsServer;
-pub use thread_pool::{NaiveThreadPool, ThreadPool};
+pub use thread_pool::{NaiveThreadPool, RayonThreadPool, ThreadPool};
 
 mod client;
 mod engines;

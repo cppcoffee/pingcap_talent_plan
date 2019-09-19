@@ -24,3 +24,5 @@ mod naive;
 pub use self::naive::NaiveThreadPool;
 mod shared_queue;
 pub use self::shared_queue::SharedQueueThreadPool;
+mod rayon;
+pub use self::rayon::RayonThreadPool;

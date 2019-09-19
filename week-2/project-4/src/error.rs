@@ -27,6 +27,9 @@ pub enum KvsError {
 
     #[fail(display = "sled error: {}", _0)]
     Sled(#[cause] sled::Error),
+
+    #[fail(display = "")]
+    RayonThreadPool(#[cause] rayon::ThreadPoolBuildError),
 }
 
 impl From<io::Error> for KvsError {
@@ -50,6 +53,12 @@ impl From<FromUtf8Error> for KvsError {
 impl From<sled::Error> for KvsError {
     fn from(err: sled::Error) -> KvsError {
         KvsError::Sled(err)
+    }
+}
+
+impl From<rayon::ThreadPoolBuildError> for KvsError {
+    fn from(err: rayon::ThreadPoolBuildError) -> KvsError {
+        KvsError::RayonThreadPool(err)
     }
 }
 
