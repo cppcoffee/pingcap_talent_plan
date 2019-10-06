@@ -24,8 +24,7 @@ and other resource. Those material should be helpful for you to complete this la
 
 First, please clone this repository with `git` to get the source code of the labs.
 
-Then, make sure you have `rustup` install, and override toolchain for this folder
-to nightly with `rustup override set nightly` . Also, to make things simpler you
+Then, make sure you have `rustup` installed. Also, to make things simpler you
 should have `make` installed.
 
 Now you can run `make test_others` to check that things are going right. You
@@ -166,7 +165,7 @@ restores persistent state to `Persister`, like in `Raft::persist` and
 `Raft::restore` using `labcodec`. You also need to determine what and when to
 persist, and call `Raft::restore` in `Raft::new`.
 
-To run all the test in this lab, run `make test_2b`. You can try to pass the
+To run all the test in this lab, run `make test_2c`. You can try to pass the
 `test_persist1_2c` test first.
 
 Here are some hints on this part:
