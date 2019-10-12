@@ -25,26 +25,6 @@ const ELECTION_TIMEOUT_MIN: u64 = 500;
 const ELECTION_TIMEOUT_MAX: u64 = 600;
 const HEARTBEAT_INTERVAL: u64 = 200;
 
-const DEBUG_ENABLE: bool = true;
-
-#[macro_export]
-macro_rules! dbg_info {
-    ($($arg: tt)*) => {
-        if DEBUG_ENABLE {
-            info!($($arg)*);
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! dbg_error {
-    ($($arg: tt)*) => {
-        if DEBUG_ENABLE {
-            error!($($arg)*);
-        }
-    };
-}
-
 pub struct ApplyMsg {
     pub command_valid: bool,
     pub command: Vec<u8>,
@@ -445,7 +425,7 @@ impl Node {
 
         match rx.recv_timeout(dur_copy) {
             Ok(ns) => {
-                dbg_info!("[FOLLOWER] peer{} discover change to {:?}.", id, ns);
+                info!("[FOLLOWER] peer{} discover change to {:?}.", id, ns);
             }
             Err(_) => {
                 let heartbeat = self.heartbeat_instant.lock().unwrap();
@@ -453,7 +433,7 @@ impl Node {
                     return;
                 }
 
-                dbg_info!("[FOLLOWER] peer{} timeout({:?}) start election.", id, dur);
+                info!("[FOLLOWER] peer{} timeout({:?}) start election.", id, dur);
                 self.raft.lock().unwrap().set_state(RaftState::Candidate);
             }
         }
@@ -468,14 +448,14 @@ impl Node {
         match rx.recv_timeout(dur) {
             Ok(ns) => {
                 if ns == RaftState::Leader {
-                    dbg_info!("[LEADER] peer{} become leader.", id);
+                    info!("[LEADER] peer{} become leader.", id);
                 } else {
-                    dbg_info!("[CANDIDATE] peer{} discover change to {:?}.", id, ns);
+                    info!("[CANDIDATE] peer{} discover change to {:?}.", id, ns);
                 }
             }
             Err(_) => {
                 // If election timeout elapses: start new election
-                dbg_info!("[CANDIDATE] peer{} timeout, new election.", id);
+                info!("[CANDIDATE] peer{} timeout, new election.", id);
             }
         }
     }
@@ -501,7 +481,7 @@ impl Node {
             last_log_term,
         };
 
-        dbg_info!("[CANDIDATE] peer{} request vote term {}.", id, term);
+        info!("[CANDIDATE] peer{} request vote term {}.", id, term);
 
         for (i, peer) in peers.iter().enumerate() {
             if i == id {
@@ -513,9 +493,7 @@ impl Node {
 
             self.spawn_future(
                 peer.request_vote(&args)
-                    .map_err(move |e| {
-                        dbg_error!("[CANDIDATE] peer{} request_vote fail, {:?}", id, e)
-                    })
+                    .map_err(move |e| warn!("[CANDIDATE] peer{} request_vote fail, {:?}", id, e))
                     .map(move |resp| {
                         // If RPC request or response contains term T > currentTerm:
                         // set currentTerm = T, convert to follower (§5.1)
@@ -527,7 +505,7 @@ impl Node {
                             let mut rf = node_clone.raft.lock().unwrap();
                             let count = votes_clone.fetch_add(1, Ordering::SeqCst);
 
-                            dbg_info!("[CANDIDATE] peer{} => peer{} granted.", i, id);
+                            info!("[CANDIDATE] peer{} => peer{} granted.", i, id);
 
                             // If votes received from majority of servers: become leader
                             if count + 1 > half_votes && !rf.state.is_leader() {
@@ -535,7 +513,7 @@ impl Node {
                                 node_clone.sc_tx.send(RaftState::Leader).unwrap();
                             }
                         } else {
-                            dbg_info!("[CANDIDATE] peer{} deny peer{} vote request.", i, id);
+                            info!("[CANDIDATE] peer{} deny peer{} vote request.", i, id);
                         }
                     }),
             );
@@ -571,12 +549,9 @@ impl Node {
             self.spawn_future(
                 peer.append_entries(&args)
                     .map_err(move |e| {
-                        dbg_error!(
+                        warn!(
                             "[LEADER] peer{} term({}) heartbeat to peer{} fail, {:?}",
-                            id,
-                            term,
-                            i,
-                            e
+                            id, term, i, e
                         )
                     })
                     .map(move |resp| {
@@ -591,7 +566,7 @@ impl Node {
         }
 
         if let Ok(ns) = rx.recv_timeout(Duration::from_millis(HEARTBEAT_INTERVAL)) {
-            dbg_info!("[LEADER] peer{} discover state change {:?}.", id, ns);
+            info!("[LEADER] peer{} discover state change {:?}.", id, ns);
         }
     }
 }
