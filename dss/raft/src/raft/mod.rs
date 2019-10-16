@@ -67,20 +67,6 @@ impl State {
     }
 }
 
-#[derive(Clone, PartialEq, Message)]
-pub struct LogEntry {
-    #[prost(uint64, tag = "1")]
-    pub term: u64,
-    #[prost(bytes, tag = "2")]
-    pub command: Vec<u8>,
-}
-
-impl LogEntry {
-    pub fn new(command: Vec<u8>, term: u64) -> LogEntry {
-        LogEntry { command, term }
-    }
-}
-
 // A single Raft peer.
 pub struct Raft {
     // RPC end points of all peers

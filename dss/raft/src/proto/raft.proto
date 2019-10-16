@@ -2,6 +2,14 @@ syntax = "proto3";
 
 package raftpb;
 
+// log entry structure.
+message LogEntry {
+    // leader term.
+    uint64 term = 1;
+    // client command.
+    bytes command = 2;
+}
+
 // Example RequestVote RPC arguments structure.
 message RequestVoteArgs {
     // candidate’s term
@@ -33,7 +41,7 @@ message AppendEntriesArgs {
     uint64 prev_log_term = 4;
     // log entries to store (empty for heartbeat;
     // may send more than one for efficiency)
-    repeated bytes entries = 5;
+    repeated LogEntry entries = 5;
     // leader’s commitIndex
     uint64 leader_commit = 6;
 }
