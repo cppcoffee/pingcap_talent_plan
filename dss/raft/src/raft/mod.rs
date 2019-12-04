@@ -158,6 +158,22 @@ impl Raft {
         // labcodec::encode(&self.xxx, &mut data).unwrap();
         // labcodec::encode(&self.yyy, &mut data).unwrap();
         // self.persister.save_raft_state(data);
+        let mut voted_for = -1_i64;
+        if self.voted_for.is_some() {
+            voted_for = self.voted_for.clone().unwrap() as i64;
+        }
+
+        let mut data = Vec::new();
+        let ps = PersistStorage {
+            term: self.state.term,
+            voted_for,
+            commit_index: self.commit_index as u64,
+            last_applied: self.last_applied as u64,
+            log: self.log.clone(),
+        };
+
+        labcodec::encode(&ps, &mut data).unwrap();
+        self.persister.save_raft_state(data);
     }
 
     /// restore previously persisted state.
@@ -177,6 +193,23 @@ impl Raft {
         //         panic!("{:?}", e);
         //     }
         // }
+        match labcodec::decode(data) {
+            Ok(o) => {
+                let ps: PersistStorage = o;
+
+                if ps.voted_for != -1 {
+                    self.voted_for = Some(ps.voted_for as usize);
+                }
+
+                self.state.term = ps.term;
+                self.commit_index = ps.commit_index as usize;
+                self.last_applied = ps.last_applied as usize;
+                self.log = ps.log.clone();
+            }
+            Err(e) => {
+                panic!("{:?}", e);
+            }
+        }
     }
 
     /// example code to send a RequestVote RPC to a server.
@@ -286,6 +319,8 @@ impl Raft {
                     command_index: self.last_applied as u64,
                 })
                 .unwrap();
+
+            self.persist();
         }
     }
 
@@ -452,6 +487,8 @@ impl Node {
         rf.set_state(RaftState::Follower);
         rf.state.term = term;
         rf.voted_for = None;
+
+        rf.persist();
     }
 
     fn spawn_future<F>(&self, f: F)
@@ -549,6 +586,7 @@ impl Node {
             let mut rf = self.raft.lock().unwrap();
             rf.voted_for = Some(rf.me);
             rf.state.term += 1;
+            rf.persist();
 
             (rf.state.term, rf.peers.clone())
         };
@@ -740,6 +778,8 @@ impl RaftService for Node {
                 vote_granted = true;
                 rf.voted_for = Some(args.candidate_id as usize);
                 rf.set_state(RaftState::Follower);
+
+                rf.persist();
             }
         }
 
@@ -804,6 +844,8 @@ impl RaftService for Node {
                 );
 
                 conflict_term = rf.log[prev_log_index].term;
+                conflict_index = 0;
+
                 // search log for the first index
                 for i in (0..prev_log_index).rev() {
                     if rf.log[i].term != conflict_term {
