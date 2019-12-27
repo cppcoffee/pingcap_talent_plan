@@ -304,7 +304,6 @@ impl Raft {
     fn apply_logs(&mut self) {
         while self.commit_index > self.last_applied {
             let command = self.log[self.last_applied].command.clone();
-
             self.last_applied += 1;
 
             info!(
@@ -312,13 +311,11 @@ impl Raft {
                 self.state.inner, self.me, self.last_applied
             );
 
-            self.apply_ch
-                .unbounded_send(ApplyMsg {
-                    command_valid: true,
-                    command,
-                    command_index: self.last_applied as u64,
-                })
-                .unwrap();
+            let _ = self.apply_ch.unbounded_send(ApplyMsg {
+                command_valid: true,
+                command,
+                command_index: self.last_applied as u64,
+            });
 
             self.persist();
         }
