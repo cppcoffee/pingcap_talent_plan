@@ -15,20 +15,49 @@ message PutAppendRequest {
     // "Put" or "Append"
     Op op = 3;
     // You'll have to add definitions here.
+    uint64 seq = 4;
+    string name = 5;
 }
 
 message PutAppendReply {
     bool wrong_leader = 1;
     string err = 2;
+    // add field.
+    uint64 seq = 3;
+    bool ready = 4;
 }
 
 message GetRequest {
     string key = 1;
     // You'll have to add definitions here.
+    uint64 seq = 2;
+    string name = 3;
 }
 
 message GetReply {
     bool wrong_leader = 1;
     string err = 2;
     string value = 3;
+    // add field.
+    uint64 seq = 4;
+    bool ready = 5;
+}
+
+message KvEntry {
+    uint64 seq = 1;
+    /// get:0, put:1, append:2.
+    int32 op = 2;
+    string name = 3;
+    string key = 4;
+    string value = 5;
+}
+
+message ReadyReply {
+    uint64 seq = 1;
+    string value = 2;
+}
+
+message Snapshot {
+    map<string, string> db = 1;
+    map<string, ReadyReply> ready_reply = 2;
 }

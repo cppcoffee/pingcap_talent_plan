@@ -158,22 +158,8 @@ impl Raft {
         // labcodec::encode(&self.xxx, &mut data).unwrap();
         // labcodec::encode(&self.yyy, &mut data).unwrap();
         // self.persister.save_raft_state(data);
-        let mut voted_for = -1_i64;
-        if self.voted_for.is_some() {
-            voted_for = self.voted_for.clone().unwrap() as i64;
-        }
-
-        let mut data = Vec::new();
-        let ps = PersistStorage {
-            term: self.state.term,
-            voted_for,
-            commit_index: self.commit_index as u64,
-            last_applied: self.last_applied as u64,
-            log: self.log.clone(),
-        };
-
-        labcodec::encode(&ps, &mut data).unwrap();
-        self.persister.save_raft_state(data);
+        let state = self.encode_state();
+        self.persister.save_raft_state(state);
     }
 
     /// restore previously persisted state.
@@ -210,6 +196,30 @@ impl Raft {
                 panic!("{:?}", e);
             }
         }
+    }
+
+    fn encode_state(&self) -> Vec<u8> {
+        let mut voted_for = -1_i64;
+        if self.voted_for.is_some() {
+            voted_for = self.voted_for.clone().unwrap() as i64;
+        }
+
+        let mut result = Vec::new();
+        let ps = PersistStorage {
+            term: self.state.term,
+            voted_for,
+            commit_index: self.commit_index as u64,
+            last_applied: self.last_applied as u64,
+            log: self.log.clone(),
+        };
+        labcodec::encode(&ps, &mut result).unwrap();
+
+        result
+    }
+
+    fn save_state_and_snapshot(&self, snapshot: Vec<u8>) {
+        let state = self.encode_state();
+        self.persister.save_state_and_snapshot(state, snapshot);
     }
 
     /// example code to send a RequestVote RPC to a server.
@@ -469,14 +479,19 @@ impl Node {
     /// threads you generated with this Raft Node.
     pub fn kill(&self) {
         // Your code here, if desired.
-        {
-            self.raft.lock().unwrap().set_state(RaftState::Shutdown);
-            self.sc_tx.send(RaftState::Shutdown).unwrap();
-        }
+        let mut rf = self.raft.lock().unwrap();
+        rf.set_state(RaftState::Shutdown);
+        drop(rf);
 
+        self.sc_tx.send(RaftState::Shutdown).unwrap();
         if let Some(handle) = self.join_handle.lock().unwrap().take() {
             handle.join().unwrap();
         }
+    }
+
+    pub fn save_state_and_snapshot(&self, snapshot: Vec<u8>) {
+        let rf = self.raft.lock().unwrap();
+        rf.save_state_and_snapshot(snapshot);
     }
 
     fn convert_to_follower(&self, term: u64) {
