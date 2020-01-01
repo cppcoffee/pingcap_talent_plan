@@ -44,7 +44,7 @@ impl KvServer {
             ready_reply: HashMap::new(),
         };
 
-        server.restore_snapshot(&snapshot);
+        server.install_snapshot(&snapshot);
 
         server
     }
@@ -60,7 +60,7 @@ impl KvServer {
         self.rf.save_state_and_snapshot(buf);
     }
 
-    fn restore_snapshot(&mut self, data: &[u8]) {
+    fn install_snapshot(&mut self, data: &[u8]) {
         if data.is_empty() {
             return;
         }
