@@ -19,6 +19,7 @@ pub struct KvServer {
     apply_ch: Option<UnboundedReceiver<raft::ApplyMsg>>,
     db: HashMap<String, String>,
     ready_reply: HashMap<String, ReadyReply>,
+    snapshot_index: u64,
 }
 
 impl KvServer {
@@ -42,6 +43,7 @@ impl KvServer {
             apply_ch: Some(apply_ch),
             db: HashMap::new(),
             ready_reply: HashMap::new(),
+            snapshot_index: 0,
         };
 
         server.install_snapshot(&snapshot);
@@ -177,11 +179,15 @@ impl Node {
             if let Ok(Async::Ready(Some(cmd))) =
                 futures::executor::spawn(futures::lazy(|| apply_ch.poll())).wait_future()
             {
+                let mut server = self.server.lock().unwrap();
+
                 if !cmd.command_valid {
+                    if server.snapshot_index < cmd.command_index {
+                        server.install_snapshot(&cmd.snapshot);
+                    }
                     continue;
                 }
 
-                let mut server = self.server.lock().unwrap();
                 let entry: KvEntry = labcodec::decode(&cmd.command).unwrap();
 
                 if let Some(reply) = server.ready_reply.get(&entry.name) {
@@ -219,6 +225,11 @@ impl Node {
                         server.db.insert(entry.key, entry.value);
                         server.ready_reply.insert(entry.name, reply);
                         server.persist_snapshot();
+
+                        server.snapshot_index = cmd.command_index;
+                        if let Some(max) = server.maxraftstate {
+                            server.rf.compress_log(max, cmd.command_index as usize);
+                        }
                     }
                     3 => {
                         // append
@@ -235,6 +246,11 @@ impl Node {
                         }
                         server.ready_reply.insert(entry.name, reply);
                         server.persist_snapshot();
+
+                        server.snapshot_index = cmd.command_index;
+                        if let Some(max) = server.maxraftstate {
+                            server.rf.compress_log(max, cmd.command_index as usize);
+                        }
                     }
                     _ => {
                         panic!("unknown op type: {}", entry.op);

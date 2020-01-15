@@ -29,6 +29,7 @@ pub struct ApplyMsg {
     pub command_valid: bool,
     pub command: Vec<u8>,
     pub command_index: u64,
+    pub snapshot: Vec<u8>,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -83,6 +84,9 @@ pub struct Raft {
     // apply_ch is a channel on which the tester or service
     // expects Raft to send ApplyMsg messages.
     apply_ch: UnboundedSender<ApplyMsg>,
+    // snapshot information.
+    last_included_index: usize,
+    last_included_term: u64,
 
     // candidateId that received vote in current
     // term (or null if none)
@@ -134,6 +138,8 @@ impl Raft {
             me,
             state: State::default(),
             apply_ch,
+            last_included_index: 0,
+            last_included_term: 0,
             voted_for: None,
             log: Vec::new(),
             commit_index: 0,
@@ -169,16 +175,6 @@ impl Raft {
             return;
         }
         // Your code here (2C).
-        // Example:
-        // match labcodec::decode(data) {
-        //     Ok(o) => {
-        //         self.xxx = o.xxx;
-        //         self.yyy = o.yyy;
-        //     }
-        //     Err(e) => {
-        //         panic!("{:?}", e);
-        //     }
-        // }
         match labcodec::decode(data) {
             Ok(o) => {
                 let ps: PersistStorage = o;
@@ -191,6 +187,8 @@ impl Raft {
                 self.commit_index = ps.commit_index as usize;
                 self.last_applied = ps.last_applied as usize;
                 self.log = ps.log.clone();
+                self.last_included_index = ps.last_included_index as usize;
+                self.last_included_term = ps.last_included_term;
             }
             Err(e) => {
                 panic!("{:?}", e);
@@ -211,6 +209,8 @@ impl Raft {
             commit_index: self.commit_index as u64,
             last_applied: self.last_applied as u64,
             log: self.log.clone(),
+            last_included_index: self.last_included_index as u64,
+            last_included_term: self.last_included_term,
         };
         labcodec::encode(&ps, &mut result).unwrap();
 
@@ -268,7 +268,7 @@ impl Raft {
         M: labcodec::Message,
     {
         if self.state.is_leader() {
-            let index = self.log.len() + 1;
+            let index = self.last_included_index + self.log.len() + 1;
             let term = self.state.term;
 
             let mut buf = Vec::new();
@@ -276,6 +276,7 @@ impl Raft {
             // Your code here (2B).
 
             self.log.push(LogEntry { term, command: buf });
+            self.persist();
 
             info!(
                 "[LEADER] peer{} push index={}, term={}",
@@ -293,27 +294,64 @@ impl Raft {
     }
 
     fn get_last_log_index_and_term(&self) -> (u64, u64) {
-        if self.log.len() > 0 {
-            let index = self.log.len() - 1;
-            (index as u64, self.log[index].term)
+        let len = self.log.len();
+        if len > 0 {
+            let pos = len - 1;
+            ((self.last_included_index + pos) as u64, self.log[pos].term)
         } else {
-            (0, 0)
+            (self.last_included_index as u64, self.last_included_term)
         }
     }
 
     fn get_prev_log_index_and_term(&self, peer_id: usize) -> (u64, u64) {
         let index = (self.next_index[peer_id] - 1) as usize;
+        let mi = self.map_index(index);
 
-        if self.log.len() > index {
-            (index as u64, self.log[index].term)
+        if self.log.len() > mi {
+            (index as u64, self.log[mi].term)
         } else {
             (index as u64, 0)
         }
     }
 
+    // map index to real log array.
+    fn map_index(&self, index: usize) -> usize {
+        if index >= self.last_included_index {
+            index - self.last_included_index
+        } else {
+            index
+        }
+    }
+
+    // API provide to kvserver.
+    fn compress_log(&mut self, maxraftstate: usize, snapshot_index: usize) {
+        if maxraftstate > self.persister.raft_state().len() {
+            return;
+        }
+
+        let index = snapshot_index - 1;
+        let mi = self.map_index(index);
+
+        info!(
+            "[Leader] peer{} compress_log({}, {}) log.len={} mi={}",
+            self.me,
+            maxraftstate,
+            index,
+            self.log.len(),
+            mi
+        );
+
+        self.last_included_index = index;
+        self.last_included_term = self.log[mi].term;
+
+        self.log.drain(..mi);
+        self.persist();
+    }
+
     fn apply_logs(&mut self) {
         while self.commit_index > self.last_applied {
-            let command = self.log[self.last_applied].command.clone();
+            let mi = self.map_index(self.last_applied);
+            let command = self.log[mi].command.clone();
             self.last_applied += 1;
 
             info!(
@@ -325,6 +363,7 @@ impl Raft {
                 command_valid: true,
                 command,
                 command_index: self.last_applied as u64,
+                snapshot: Vec::new(),
             });
 
             self.persist();
@@ -336,16 +375,17 @@ impl Raft {
         let n = self.peers.len();
         let current_term = self.state.term;
 
-        for index in ((self.commit_index + 1)..=self.match_index[peer_id] as usize).rev() {
+        for i in ((self.commit_index + 1)..=self.match_index[peer_id] as usize).rev() {
             let mut count = 1;
-            for m in self.match_index.iter() {
-                if *m >= index as u64 {
+            for j in self.match_index.iter() {
+                if *j >= i as u64 {
                     count += 1;
                 }
             }
 
-            if count > n / 2 && self.log[index - 1].term == current_term {
-                res = index;
+            let mi = self.map_index(i);
+            if count > n / 2 && self.log[mi - 1].term == current_term {
+                res = i;
                 break;
             }
         }
@@ -483,7 +523,7 @@ impl Node {
         rf.set_state(RaftState::Shutdown);
         drop(rf);
 
-        self.sc_tx.send(RaftState::Shutdown).unwrap();
+        let _ = self.sc_tx.send(RaftState::Shutdown);
         if let Some(handle) = self.join_handle.lock().unwrap().take() {
             handle.join().unwrap();
         }
@@ -492,6 +532,11 @@ impl Node {
     pub fn save_state_and_snapshot(&self, snapshot: Vec<u8>) {
         let rf = self.raft.lock().unwrap();
         rf.save_state_and_snapshot(snapshot);
+    }
+
+    pub fn compress_log(&self, maxraftstate: usize, snapshot_index: usize) {
+        let mut rf = self.raft.lock().unwrap();
+        rf.compress_log(maxraftstate, snapshot_index);
     }
 
     fn convert_to_follower(&self, term: u64) {
@@ -636,7 +681,7 @@ impl Node {
 
                             // If votes received from majority of servers: become leader
                             if *passed > nums / 2 && node_clone.get_state().is_candidate() {
-                                node_clone.sc_tx.send(RaftState::Leader).unwrap();
+                                let _ = node_clone.sc_tx.send(RaftState::Leader);
                             }
                         } else {
                             info!("[CANDIDATE] peer{} deny peer{} vote request.", i, id);
@@ -651,9 +696,9 @@ impl Node {
     // prevent election timeouts (§5.2)
     fn leader_heartbeat(&self, rx: &Receiver<RaftState>) {
         let id = self.id;
-        let (current_term, peers) = {
+        let (last_included_index, peers) = {
             let rf = self.raft.lock().unwrap();
-            (rf.state.term, rf.peers.clone())
+            (rf.last_included_index as u64, rf.peers.clone())
         };
 
         for (i, peer) in peers.iter().enumerate() {
@@ -661,58 +706,15 @@ impl Node {
                 continue;
             }
 
-            let args = self.make_append_entries_args(i);
-            let node_clone = self.clone();
+            let rf = self.raft.lock().unwrap();
+            let (prev_log_index, _) = rf.get_prev_log_index_and_term(i);
+            drop(rf);
 
-            self.spawn_future(
-                peer.append_entries(&args)
-                    .map_err(move |e| {
-                        debug!(
-                            "[LEADER] peer{} term({}) heartbeat to peer{} fail, {:?}",
-                            id, current_term, i, e
-                        )
-                    })
-                    .map(move |resp| {
-                        // If RPC request or response contains term T > currentTerm:
-                        // set currentTerm = T, convert to follower (§5.1)
-                        if resp.term > current_term {
-                            node_clone.convert_to_follower(resp.term);
-                            node_clone.sc_tx.send(RaftState::Follower).unwrap();
-                        }
-
-                        let mut rf = node_clone.raft.lock().unwrap();
-
-                        if resp.success {
-                            // update nextIndex and matchIndex for follower (§5.3)
-                            rf.match_index[i] = args.prev_log_index + args.entries.len() as u64;
-                            rf.next_index[i] = rf.match_index[i] + 1;
-
-                            let n = rf.find_majority_match_index(i);
-
-                            // If there exists an N such that N > commitIndex, a majority
-                            // of matchIndex[i] ≥ N, and log[N].term == currentTerm:
-                            // set commitIndex = N (§5.3, §5.4).
-                            if n > rf.commit_index && rf.log[n - 1].term == current_term {
-                                rf.commit_index = n;
-                                rf.apply_logs();
-                            }
-                        } else {
-                            // If AppendEntries fails because of log inconsistency:
-                            // decrement nextIndex and retry (§5.3)
-                            //rf.next_index[i] = max(rf.next_index[i] - 1, 1);
-                            let mut tmp = resp.conflict_index;
-                            if resp.conflict_term != 0 {
-                                for j in (0..rf.log.len()).rev() {
-                                    if rf.log[j].term == resp.conflict_term {
-                                        tmp = j as u64;
-                                        break;
-                                    }
-                                }
-                            }
-                            rf.next_index[i] = max(tmp, 1);
-                        }
-                    }),
-            );
+            if prev_log_index < last_included_index {
+                self.send_install_snapshot(i, &peer);
+            } else {
+                self.send_append_entries(i, &peer);
+            }
         }
 
         if let Ok(ns) = rx.recv_timeout(Duration::from_millis(HEARTBEAT_INTERVAL)) {
@@ -740,8 +742,9 @@ impl Node {
         let (prev_log_index, prev_log_term) = rf.get_prev_log_index_and_term(peer_id);
 
         let mut entries = Vec::new();
+        let mi = rf.map_index(prev_log_index as usize);
 
-        rf.log[prev_log_index as usize..].iter().for_each(|e| {
+        rf.log[mi..].iter().for_each(|e| {
             entries.push(e.clone());
         });
 
@@ -753,6 +756,109 @@ impl Node {
             entries,
             leader_commit: rf.commit_index as u64,
         }
+    }
+
+    // spawn future send append_entries RPC to peer.
+    fn send_append_entries(&self, i: usize, peer: &RaftClient) {
+        let id = self.id;
+        let current_term = self.term();
+        let args = self.make_append_entries_args(i);
+        let node_clone = self.clone();
+
+        self.spawn_future(
+            peer.append_entries(&args)
+                .map_err(move |e| {
+                    debug!(
+                        "[LEADER] peer{} term({}) append_entries to peer{} fail, {:?}",
+                        id, current_term, i, e
+                    )
+                })
+                .map(move |resp| {
+                    // If RPC request or response contains term T > currentTerm:
+                    // set currentTerm = T, convert to follower (§5.1)
+                    if resp.term > current_term {
+                        node_clone.convert_to_follower(resp.term);
+                        let _ = node_clone.sc_tx.send(RaftState::Follower);
+                    }
+
+                    let mut rf = node_clone.raft.lock().unwrap();
+
+                    if resp.success {
+                        // update nextIndex and matchIndex for follower (§5.3)
+                        rf.match_index[i] = args.prev_log_index + args.entries.len() as u64;
+                        rf.next_index[i] = rf.match_index[i] + 1;
+
+                        let n = rf.find_majority_match_index(i);
+                        let mi = rf.map_index(n);
+
+                        // If there exists an N such that N > commitIndex, a majority
+                        // of matchIndex[i] ≥ N, and log[N].term == currentTerm:
+                        // set commitIndex = N (§5.3, §5.4).
+                        if n > rf.commit_index && rf.log[mi - 1].term == current_term {
+                            rf.commit_index = n;
+                            rf.apply_logs();
+                        }
+                    } else {
+                        // If AppendEntries fails because of log inconsistency:
+                        // decrement nextIndex and retry (§5.3)
+                        //rf.next_index[i] = max(rf.next_index[i] - 1, 1);
+                        let mut tmp = resp.conflict_index;
+                        if resp.conflict_term != 0 {
+                            for j in (0..rf.log.len()).rev() {
+                                if rf.log[j].term == resp.conflict_term {
+                                    tmp = (rf.last_included_index + j) as u64;
+                                    break;
+                                }
+                            }
+                        }
+                        rf.next_index[i] = max(tmp, 1);
+                    }
+                }),
+        );
+    }
+
+    fn make_install_snapshot_args(&self) -> InstallSnapshotArgs {
+        let leader_id = self.id as u64;
+        let rf = self.raft.lock().unwrap();
+        let term = rf.state.term;
+
+        InstallSnapshotArgs {
+            term,
+            leader_id,
+            last_included_index: rf.last_included_index as u64,
+            last_included_term: rf.last_included_term,
+            snapshot: rf.persister.snapshot(),
+        }
+    }
+
+    // spawn future send install_snapshot RPC to peer.
+    fn send_install_snapshot(&self, i: usize, peer: &RaftClient) {
+        let id = self.id;
+        let args = self.make_install_snapshot_args();
+        let node_clone = self.clone();
+        let current_term = self.term();
+
+        self.spawn_future(
+            peer.install_snapshot(&args)
+                .map_err(move |e| {
+                    debug!(
+                        "[LEADER] peer{} term({}) install_snapshot to peer{} fail, {:?}",
+                        id, current_term, i, e
+                    )
+                })
+                .map(move |resp| {
+                    if resp.term > node_clone.term() {
+                        node_clone.convert_to_follower(resp.term);
+                    }
+
+                    let mut rf = node_clone.raft.lock().unwrap();
+                    if rf.state.is_leader() {
+                        let last_included_index = rf.last_included_index as u64;
+                        rf.next_index[i] = last_included_index + 1;
+                        rf.match_index[i] = last_included_index;
+                    }
+                }),
+        );
     }
 }
 
@@ -770,7 +876,7 @@ impl RaftService for Node {
         // set currentTerm = T, convert to follower (§5.1)
         if args.term > current_term {
             self.convert_to_follower(args.term);
-            self.sc_tx.send(RaftState::Follower).unwrap();
+            let _ = self.sc_tx.send(RaftState::Follower);
         }
 
         // Reply false if term < currentTerm (§5.1)
@@ -819,14 +925,14 @@ impl RaftService for Node {
         // follower
         if self.get_state().is_candidate() && voted_for != Some(args.leader_id as usize) {
             self.convert_to_follower(current_term);
-            self.sc_tx.send(RaftState::Follower).unwrap();
+            let _ = self.sc_tx.send(RaftState::Follower);
         }
 
         // If RPC request or response contains term T > currentTerm:
         // set currentTerm = T, convert to follower (§5.1)
         if args.term > current_term {
             self.convert_to_follower(args.term);
-            self.sc_tx.send(RaftState::Follower).unwrap();
+            let _ = self.sc_tx.send(RaftState::Follower);
         }
 
         // Reply false if term < currentTerm (§5.1)
@@ -835,10 +941,11 @@ impl RaftService for Node {
         } else {
             let prev_log_index = args.prev_log_index as usize;
             let mut rf = self.raft.lock().unwrap();
+            let mi = rf.map_index(prev_log_index);
 
             // Reply false if log doesn’t contain an entry at prevLogIndex
             // whose term matches prevLogTerm (§5.3)
-            if prev_log_index > rf.log.len() {
+            if prev_log_index > rf.last_included_index + rf.log.len() {
                 info!(
                     "[FOLLOWER] peer{} prev_log_index({}) > log.len({})",
                     rf.me,
@@ -847,21 +954,19 @@ impl RaftService for Node {
                 );
 
                 success = false;
-            } else if rf.log.len() > prev_log_index
-                && rf.log[prev_log_index].term != args.prev_log_term
-            {
+            } else if rf.log.len() > mi && rf.log[mi].term != args.prev_log_term {
                 info!(
                     "[FOLLOWER] peer{} log mismatch index={}, {} != {}",
-                    rf.me, prev_log_index, rf.log[prev_log_index].term, args.prev_log_term
+                    rf.me, prev_log_index, rf.log[mi].term, args.prev_log_term
                 );
 
-                conflict_term = rf.log[prev_log_index].term;
+                conflict_term = rf.log[mi].term;
                 conflict_index = 0;
 
                 // search log for the first index
-                for i in (0..prev_log_index).rev() {
+                for i in (0..mi).rev() {
                     if rf.log[i].term != conflict_term {
-                        conflict_index = (i + 1) as u64;
+                        conflict_index = (rf.last_included_index + i + 1) as u64;
                         break;
                     }
                 }
@@ -874,23 +979,28 @@ impl RaftService for Node {
                 // but different terms), delete the existing entry and all that
                 // follow it (§5.3)
                 for i in 0..args.entries.len() {
-                    let index = prev_log_index + i;
+                    let index = mi + i;
 
                     if index >= rf.log.len() {
                         // Append any new entries not already in the log
                         rf.log.push(args.entries[i].clone());
+                        rf.persist();
                     } else if rf.log.len() > index && rf.log[index] != args.entries[i] {
                         rf.log.truncate(index);
 
                         let mut entries = args.entries[i..].to_vec();
                         rf.log.append(&mut entries);
+                        rf.persist();
                         break;
                     }
                 }
 
                 // If leaderCommit > commitIndex, set commitIndex =
                 // min(leaderCommit, index of last new entry)
-                rf.commit_index = min(args.leader_commit as usize, rf.log.len());
+                rf.commit_index = min(
+                    args.leader_commit as usize,
+                    rf.last_included_index + rf.log.len(),
+                );
                 rf.apply_logs();
             }
         }
@@ -901,5 +1011,57 @@ impl RaftService for Node {
             conflict_index,
             conflict_term,
         }))
+    }
+
+    fn install_snapshot(&self, args: InstallSnapshotArgs) -> RpcFuture<InstallSnapshotReply> {
+        let (current_term, last_included_index) = {
+            let rf = self.raft.lock().unwrap();
+            (rf.state.term, rf.last_included_index as u64)
+        };
+        let mut reply = InstallSnapshotReply { term: current_term };
+
+        if args.term >= current_term && args.last_included_index > last_included_index {
+            self.convert_to_follower(args.term);
+            reply.term = args.term;
+
+            let mut rf = self.raft.lock().unwrap();
+
+            // If existing log entry has same index and term as snapshot’s
+            // last included entry, retain log entries following it
+            let (last_index, _) = rf.get_last_log_index_and_term();
+            let mut retained_index = last_index as usize;
+            for i in 0..rf.log.len() {
+                let j = rf.last_included_index + i + 1;
+                if j as u64 == args.last_included_index && rf.log[i].term == args.last_included_term
+                {
+                    retained_index = j;
+                }
+            }
+
+            let mi = rf.map_index(retained_index);
+            rf.log.drain(..mi);
+
+            info!(
+                "[Follower] peer{} install_snapshot {} to {}",
+                rf.me, retained_index, mi
+            );
+
+            // update raft state
+            rf.commit_index = args.last_included_index as usize;
+            rf.last_applied = args.last_included_index as usize;
+            rf.last_included_index = args.last_included_index as usize;
+            rf.last_included_term = args.last_included_term;
+            rf.save_state_and_snapshot(args.snapshot.clone());
+
+            // send the snapshot to kvserver
+            let _ = rf.apply_ch.unbounded_send(ApplyMsg {
+                command_valid: false, // set false for lab2
+                command: vec![],
+                command_index: args.last_included_index,
+                snapshot: args.snapshot,
+            });
+        }
+
+        Box::new(future::ok(reply))
     }
 }
