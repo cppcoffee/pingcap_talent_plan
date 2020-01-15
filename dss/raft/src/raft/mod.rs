@@ -276,7 +276,7 @@ impl Raft {
             // Your code here (2B).
 
             self.log.push(LogEntry { term, command: buf });
-            self.persist();
+            //self.persist();
 
             info!(
                 "[LEADER] peer{} push index={}, term={}",
