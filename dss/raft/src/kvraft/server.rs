@@ -227,9 +227,6 @@ impl Node {
                         server.persist_snapshot();
 
                         server.snapshot_index = cmd.command_index;
-                        if let Some(max) = server.maxraftstate {
-                            server.rf.compress_log(max, cmd.command_index as usize);
-                        }
                     }
                     3 => {
                         // append
@@ -248,13 +245,15 @@ impl Node {
                         server.persist_snapshot();
 
                         server.snapshot_index = cmd.command_index;
-                        if let Some(max) = server.maxraftstate {
-                            server.rf.compress_log(max, cmd.command_index as usize);
-                        }
                     }
                     _ => {
                         panic!("unknown op type: {}", entry.op);
                     }
+                }
+
+                // compress raft log
+                if let Some(max) = server.maxraftstate {
+                    server.rf.compress_log(max, cmd.command_index as usize);
                 }
             }
 
